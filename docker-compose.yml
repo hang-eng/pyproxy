@@ -1,0 +1,114 @@
+# ⚠️ 本文件尚未在本机验证过。
+#
+# 这台机器上没有安装 Docker（`docker` 命令不存在），所以下面的镜像与编排
+# 定义是**按规范写的、但没有实际构建运行过**。已做到的验证只有「YAML 能被
+# PyYAML 解析」。这一点如实写在这里，请勿当作"跑通了"。
+#
+# 一键起「1 个代理 + 3 个模拟后端」，用来演示负载均衡、健康检查与失败重试：
+#
+#   docker compose up --build
+#   浏览器打开 http://127.0.0.1:8080/
+#
+# 代理的管理页仅容器内可达，想从宿主机看：
+#   docker compose exec proxy python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/__admin').read().decode())"
+
+services:
+
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pyproxy:latest
+    ports:
+      - "8080:8080"
+    # 后端用服务名寻址。compose 自带 DNS，容器重建后 IP 变了也不影响，
+    # 所以这里能写名字就不要写 IP。
+    command:
+      - --listen-host
+      - "0.0.0.0"
+      - --listen-port
+      - "8080"
+      - --backends
+      - "backend-a:9000:3,backend-b:9000:2,backend-c:9000:1"
+      - --strategy
+      - weighted_round_robin
+      - --health-interval
+      - "3"
+      - --health-path
+      - /health
+      - --max-retries
+      - "2"
+      - --rate-limit
+      - "20"
+      - --rate-burst
+      - "40"
+    depends_on:
+      backend-a:
+        condition: service_healthy
+      backend-b:
+        condition: service_healthy
+      backend-c:
+        condition: service_healthy
+    # 让访问日志在 docker logs 里立即可见，而不是等缓冲区满
+    environment:
+      PYTHONUNBUFFERED: "1"
+    restart: unless-stopped
+    healthcheck:
+      # 与 Dockerfile 里的探针一致，这里显式写出来是为了让 compose ps
+      # 能直接显示健康状态
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__admin', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      start_period: 3s
+      retries: 3
+
+  # 三个模拟后端。它们用同一个镜像、同一个入口，只靠 --name 区分，
+  # 这样响应里能看出到底是哪台机器在服务。
+  backend-a:
+    build:
+      context: .
+    image: pyproxy:latest
+    entrypoint: ["python", "mock_backend.py"]
+    command: ["--host", "0.0.0.0", "--port", "9000", "--name", "A"]
+    expose:
+      - "9000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=2)"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+    restart: unless-stopped
+
+  backend-b:
+    build:
+      context: .
+    image: pyproxy:latest
+    entrypoint: ["python", "mock_backend.py"]
+    command: ["--host", "0.0.0.0", "--port", "9000", "--name", "B"]
+    expose:
+      - "9000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=2)"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+    restart: unless-stopped
+
+  backend-c:
+    build:
+      context: .
+    image: pyproxy:latest
+    entrypoint: ["python", "mock_backend.py"]
+    command: ["--host", "0.0.0.0", "--port", "9000", "--name", "C"]
+    expose:
+      - "9000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=2)"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+    restart: unless-stopped
